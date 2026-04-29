@@ -1,0 +1,260 @@
+name: UI Review - Delete
+
+# Reusable workflow called by individual UI repo stop-review.yml caller files.
+# Triggered when a PR is closed; removes the review deployment from S3 and
+# posts a Jira comment when the PR is merged.
+#
+# CONTRACT MODE (default): cleans up one S3 prefix per contract label.
+# NO-CONTRACT MODE: set require_contract_label: false and fixed_environment.
+#   Cleans up the single S3 prefix derived from the branch name.
+#
+# CALLER EXAMPLE – contract mode
+# --------------------------------
+# jobs:
+#   stop_review:
+#     uses: priority-digital-health/github-actions/.github/workflows/ui-stop-review.yml@main
+#     with:
+#       app: booking-engine
+#       environment_suffix: pre-prod
+#     secrets: inherit
+#
+# CALLER EXAMPLE – no-contract mode
+# -----------------------------------
+# jobs:
+#   stop_review:
+#     uses: priority-digital-health/github-actions/.github/workflows/ui-stop-review.yml@main
+#     with:
+#       app: platform-ui
+#       require_contract_label: false
+#       fixed_environment: review
+#     secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+
+      # -- Identity ------------------------------------------------------------
+      app:
+        description: 'App name used in step summaries and logs'
+        required: true
+        type: string
+
+      # -- Contract mode vs no-contract mode -----------------------------------
+      require_contract_label:
+        description: >
+          When false, skip contract label parsing and clean up a single
+          deployment (no contract suffix in the S3 identifier).
+          Must also set fixed_environment.
+        required: false
+        type: boolean
+        default: true
+
+      fixed_environment:
+        description: 'GitHub environment name to use in no-contract mode (e.g. review)'
+        required: false
+        type: string
+        default: ''
+
+      # -- Branch / identifier construction ------------------------------------
+      # Must match the values used in the corresponding ui-review.yml caller.
+      branch_max_length:
+        description: 'Maximum characters taken from the branch name'
+        required: false
+        type: number
+        default: 30
+
+      branch_suffix:
+        description: 'Static string appended after the contract slug (e.g. "-ml")'
+        required: false
+        type: string
+        default: ''
+
+      # -- GitHub environment naming -------------------------------------------
+      environment_middle:
+        description: 'Fixed middle segment in the environment name, include leading dash (e.g. "-lms")'
+        required: false
+        type: string
+        default: ''
+
+      environment_suffix:
+        description: 'Trailing segment of the GitHub environment name (e.g. "preprod" or "pre-prod")'
+        required: false
+        type: string
+        default: 'preprod'
+
+      # -- S3 / review domain -------------------------------------------------
+      s3_bucket:
+        description: 'S3 bucket used for review deployments'
+        required: false
+        type: string
+        default: 'pdhdev.co.uk'
+
+      review_domain:
+        description: 'Domain used to construct review URLs in Jira notifications'
+        required: false
+        type: string
+        default: 'pdhdev.co.uk'
+
+    secrets:
+      # AWS credentials for S3 deletion — required when not using secrets: inherit.
+      # Automatically available when the caller uses secrets: inherit.
+      AWS_ACCESS_KEY_ID:
+        description: 'AWS access key ID for S3 deletion.'
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        description: 'AWS secret access key for S3 deletion.'
+        required: false
+      # Jira secrets — required when not using secrets: inherit.
+      JIRA_BASE_URL:
+        description: 'Jira base URL for merge notifications.'
+        required: false
+      JIRA_USER_EMAIL:
+        description: 'Jira user email for merge notifications.'
+        required: false
+      JIRA_API_TOKEN:
+        description: 'Jira API token for merge notifications.'
+        required: false
+
+jobs:
+  # -- 1. Parse contract labels (non-failing; labels may have been removed) ---
+  parse_labels:
+    runs-on: ubuntu-latest
+    outputs:
+      contracts: ${{ steps.get_labels.outputs.contracts }}
+    steps:
+      - name: Get PR labels
+        id: get_labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const requireContractLabel = ${{ inputs.require_contract_label }};
+
+            // No-contract mode: single teardown iteration using empty contract
+            if (!requireContractLabel) {
+              core.setOutput('contracts', JSON.stringify(['']));
+              return;
+            }
+
+            const labels = context.payload.pull_request.labels.map(l => l.name);
+            const contractLabels = labels.filter(l => l.startsWith('contract:'));
+            const contracts = [...new Set(
+              contractLabels.map(l => l.split(':')[1]?.trim()).filter(Boolean)
+            )];
+            core.setOutput('contracts', JSON.stringify(contracts));
+
+  # -- 2. Delete review site from S3 (matrix per contract / single in no-contract mode) --
+  delete_review_app:
+    needs: parse_labels
+    if: needs.parse_labels.outputs.contracts != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        contract: ${{ fromJSON(needs.parse_labels.outputs.contracts) }}
+    environment:
+      name: >-
+        ${{
+          inputs.fixed_environment != '' && inputs.fixed_environment
+          || format('{0}{1}-{2}',
+               matrix.contract,
+               inputs.environment_middle,
+               inputs.environment_suffix)
+        }}
+      url: https://$\{\{ steps.env.outputs.identifier }}.${{ inputs.review_domain }}
+    steps:
+      - name: Process branch name
+        id: process-branch
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          BRANCH=$(echo "$BRANCH" | cut -c1-${{ inputs.branch_max_length }})
+          CONTRACT="${{ matrix.contract }}"
+          if [ -n "$CONTRACT" ]; then
+            PROCESSED_BRANCH="${BRANCH}-${CONTRACT}${{ inputs.branch_suffix }}"
+          else
+            PROCESSED_BRANCH="${BRANCH}${{ inputs.branch_suffix }}"
+          fi
+          echo "PROCESSED_BRANCH=$PROCESSED_BRANCH" >> $GITHUB_OUTPUT
+          echo "Using processed branch name: $PROCESSED_BRANCH"
+
+      - uses: priority-digital-health/review-site-name-action@main
+        id: env
+        with:
+          branch-name: ${{ steps.process-branch.outputs.PROCESSED_BRANCH }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-2' }}
+
+      - name: Delete from S3
+        run: |
+          aws s3 rm s3://${{ inputs.s3_bucket }}/${{ steps.env.outputs.identifier }}/ --recursive
+
+      - name: Add summary
+        run: |
+          echo "### Review site removed: ${{ inputs.app }}" >> $GITHUB_STEP_SUMMARY
+          CONTRACT="${{ matrix.contract }}"
+          [ -n "$CONTRACT" ] && echo "**Contract:** $CONTRACT  " >> $GITHUB_STEP_SUMMARY || true
+          echo "**Identifier:** ${{ steps.env.outputs.identifier }}" >> $GITHUB_STEP_SUMMARY
+
+  # -- 3. Notify Jira on merge ------------------------------------------------
+  notify_jira:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find Jira ticket in branch name
+        id: jira_ticket
+        run: |
+          TICKET=$(echo "${{ github.head_ref }}" | grep -oE '[A-Z]+-[0-9]+' || echo '')
+          echo "TICKET=$TICKET" >> $GITHUB_OUTPUT
+
+      - name: Set deployment URLs
+        id: urls
+        run: |
+          BASE_REF="${{ github.event.pull_request.base.ref }}"
+          if [[ "$BASE_REF" == "dev" || "$BASE_REF" == "main" ]]; then
+            echo "DEPLOY_URLS=Deployed to Staging: https://staging.pdhdev.co.uk/login & Pre-prod: https://preprd.pdhdev.co.uk/login" >> "$GITHUB_OUTPUT"
+            echo "REVIEW_URL=https://preprd.pdhdev.co.uk/login" >> "$GITHUB_OUTPUT"
+          else
+            PROCESSED_BRANCH=$(echo "$BASE_REF" | cut -c1-30 | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+            BRANCH_URL="https://${PROCESSED_BRANCH}.${{ inputs.review_domain }}/login"
+            echo "DEPLOY_URLS=Deployed to Review: $BRANCH_URL" >> "$GITHUB_OUTPUT"
+            echo "REVIEW_URL=$BRANCH_URL" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Login to Jira
+        if: steps.jira_ticket.outputs.TICKET != ''
+        uses: atlassian/gajira-login@v3
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+
+      - name: Set review URL field in Jira
+        if: steps.jira_ticket.outputs.TICKET != ''
+        env:
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          TICKET: ${{ steps.jira_ticket.outputs.TICKET }}
+          REVIEW_URL: ${{ steps.urls.outputs.REVIEW_URL }}
+        run: |
+          curl -s -X PUT \
+            -H "Content-Type: application/json" \
+            -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+            "$JIRA_BASE_URL/rest/api/3/issue/$TICKET" \
+            -d "{\"fields\": {\"customfield_10050\": \"$REVIEW_URL\"}}"
+
+      - name: Comment on Jira ticket about merge
+        if: steps.jira_ticket.outputs.TICKET != ''
+        uses: atlassian/gajira-comment@v3
+        with:
+          issue: ${{ steps.jira_ticket.outputs.TICKET }}
+          comment: |
+            🔄 Branch merged into *${{ github.event.pull_request.base.ref }}*
+            👤 Merged by: ${{ github.event.pull_request.merged_by.login }}
+            🔗 Pull Request: ${{ github.event.pull_request.html_url }}
+            📅 Merged at: ${{ github.event.pull_request.merged_at }}
+
+            ${{ steps.urls.outputs.DEPLOY_URLS }}

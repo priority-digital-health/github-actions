@@ -1,0 +1,572 @@
+name: UI Review - Build & Deploy
+
+# Reusable workflow called by individual UI repo review.yml caller files.
+# Handles contract-label parsing, environment setup, build, and S3 deployment
+# for the standard contract-based review pattern used across all UI repos.
+#
+# CONTRACT MODE (default)
+# -----------------------
+# Set require_contract_label: true (default). One or more contract: labels
+# control which GitHub environments are targeted and what --mode flag is passed
+# to the build. A matrix runs one deploy job per contract.
+#
+# NO-CONTRACT MODE (platform-ui style)
+# -------------------------------------
+# Set require_contract_label: false and fixed_environment: <env-name>.
+# A single deploy runs with no contract suffix. Build command defaults to
+# `pnpm build` (no --mode flag); override with build_command if needed.
+#
+# BACKEND LABEL DETECTION
+# -----------------------
+# Set backend_label_prefix, backend_label_map (JSON {"value":"url",...}), and
+# backend_default_url to enable dynamic backend URL selection from PR labels.
+# The detected URL is appended to .env.local as {backend_env_var}=<url>.
+#
+# ENV FILE CONVENTION
+# -------------------
+# Define a GitHub environment variable ENV_FILE_CONTENT containing the full text
+# of .env.local for each environment. The workflow writes this to .env.local
+# before running the build. For secret values, map them via ENV_SECRET_1/2/3/4
+# secrets inputs (paired with env_secret_N_key inputs for the variable name).
+#
+# CALLER EXAMPLE – contract mode
+# ------------------------------
+# jobs:
+#   review:
+#     uses: priority-digital-health/github-actions/.github/workflows/ui-review.yml@main
+#     with:
+#       app: booking-engine
+#       environment_suffix: pre-prod
+#     secrets: inherit
+#
+# CALLER EXAMPLE – no-contract mode
+# ----------------------------------
+# jobs:
+#   review:
+#     uses: priority-digital-health/github-actions/.github/workflows/ui-review.yml@main
+#     with:
+#       app: platform-ui
+#       require_contract_label: false
+#       fixed_environment: review
+#       build_command: pnpm build
+#       build_directory: build
+#       backend_label_prefix: backend
+#       backend_label_map: '{"staging":"https://api.platform.staging.pdhdev.co.uk/api"}'
+#       backend_default_url: https://api.platform.preprd.pdhdev.co.uk/api
+#       backend_env_var: VITE_APP_PLATFORM_SDK_BASE_URL
+#       env_secret_1_key: VITE_APP_API_KEY
+#       env_secret_2_key: VITE_APP_POSTCODER_API_KEY
+#     secrets:
+#       ENV_SECRET_1: ${{ secrets.RCPCH_API_KEY }}
+#       ENV_SECRET_2: ${{ secrets.POSTCODER_API_KEY }}
+
+on:
+  workflow_call:
+    inputs:
+
+      # -- Identity ------------------------------------------------------------
+      app:
+        description: 'App name used in step summaries and logs'
+        required: true
+        type: string
+
+      # -- Node / pnpm ---------------------------------------------------------
+      node_version:
+        description: 'Node.js version'
+        required: false
+        type: string
+        default: '22.20.0'
+
+      pnpm_version:
+        description: 'pnpm version'
+        required: false
+        type: string
+        default: '9.5.0'
+
+      # -- Build output --------------------------------------------------------
+      build_directory:
+        description: 'Directory containing the built output (synced to S3)'
+        required: false
+        type: string
+        default: 'dist'
+
+      # -- Build command -------------------------------------------------------
+      build_command:
+        description: >
+          Override the full build command. When empty (default):
+            contract mode   → pnpm build --mode {contract}{mode_suffix}
+            no-contract mode → pnpm build
+        required: false
+        type: string
+        default: ''
+
+      # -- Unit test command ---------------------------------------------------
+      unit_test_command:
+        description: >
+          Run this command as a unit-test step inside the build job before
+          building. Leave empty (default) to skip. Example: pnpm vitest run
+        required: false
+        type: string
+        default: ''
+
+      # -- Branch / identifier construction ------------------------------------
+      branch_max_length:
+        description: 'Maximum characters taken from the branch name when building the review-site identifier'
+        required: false
+        type: number
+        default: 30
+
+      branch_suffix:
+        description: 'Static string appended after the contract slug in the processed branch name (e.g. "-ml" for mailing-list)'
+        required: false
+        type: string
+        default: ''
+
+      # -- GitHub environment naming -------------------------------------------
+      # Contract mode – final environment name pattern:
+      #   {contract}{environment_middle}{mode_suffix}-{environment_suffix}
+      # No-contract mode – use fixed_environment directly.
+      require_contract_label:
+        description: >
+          When false, skip contract label parsing and run a single deployment.
+          Must also set fixed_environment. Build command will be pnpm build
+          (no --mode flag) unless build_command is overridden.
+        required: false
+        type: boolean
+        default: true
+
+      fixed_environment:
+        description: >
+          Use this GitHub environment name directly instead of the computed
+          {contract}-{suffix} pattern. Required when require_contract_label is false.
+          Example: review
+        required: false
+        type: string
+        default: ''
+
+      environment_middle:
+        description: 'Fixed segment inserted between contract and mode in the environment name, include leading dash (e.g. "-lms")'
+        required: false
+        type: string
+        default: ''
+
+      environment_suffix:
+        description: 'Trailing segment of the GitHub environment name (e.g. "preprod" or "pre-prod")'
+        required: false
+        type: string
+        default: 'preprod'
+
+      # -- S3 / review domain -------------------------------------------------
+      s3_bucket:
+        description: 'S3 bucket used for review deployments'
+        required: false
+        type: string
+        default: 'pdhdev.co.uk'
+
+      review_domain:
+        description: 'Domain used to construct the public review URL'
+        required: false
+        type: string
+        default: 'pdhdev.co.uk'
+
+      # -- Mode label ----------------------------------------------------------
+      mode_label_prefix:
+        description: 'Label prefix for the optional build-mode label (e.g. "mode" or "build")'
+        required: false
+        type: string
+        default: 'mode'
+
+      require_mode_label:
+        description: 'Fail the workflow when no mode label is present on the PR'
+        required: false
+        type: boolean
+        default: false
+
+      mode_value_map:
+        description: >
+          Comma-separated Original=mapped pairs to transform mode label values.
+          Example: "Assessment=assess,Referral=refer,Signup=signup"
+        required: false
+        type: string
+        default: ''
+
+      # -- Backend label detection ---------------------------------------------
+      backend_label_prefix:
+        description: >
+          When set, detect a PR label matching {prefix}:{value} and use it to
+          select a backend URL. Example: backend (matches backend:staging).
+          Leave empty to disable.
+        required: false
+        type: string
+        default: ''
+
+      backend_label_map:
+        description: >
+          JSON object mapping label values to backend URLs.
+          Example: {"staging":"https://api.platform.staging.pdhdev.co.uk/api"}
+        required: false
+        type: string
+        default: ''
+
+      backend_default_url:
+        description: 'Backend URL to use when no backend label matches'
+        required: false
+        type: string
+        default: ''
+
+      backend_env_var:
+        description: 'Name of the env var to write the detected backend URL into (e.g. VITE_APP_PLATFORM_SDK_BASE_URL)'
+        required: false
+        type: string
+        default: ''
+
+      # -- Secret env var lines -----------------------------------------------
+      # Each pair writes {key}={secret} as a line in .env.local.
+      env_secret_1_key:
+        description: '.env.local variable name for ENV_SECRET_1 (e.g. VITE_APP_API_KEY)'
+        required: false
+        type: string
+        default: ''
+
+      env_secret_2_key:
+        description: '.env.local variable name for ENV_SECRET_2'
+        required: false
+        type: string
+        default: ''
+
+      env_secret_3_key:
+        description: '.env.local variable name for ENV_SECRET_3'
+        required: false
+        type: string
+        default: ''
+
+      env_secret_4_key:
+        description: '.env.local variable name for ENV_SECRET_4'
+        required: false
+        type: string
+        default: ''
+
+    secrets:
+      # AWS credentials for S3 deployment — required when not using secrets: inherit
+      AWS_ACCESS_KEY_ID:
+        description: 'AWS access key ID for S3 upload. Automatically available via secrets: inherit.'
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        description: 'AWS secret access key for S3 upload. Automatically available via secrets: inherit.'
+        required: false
+      ENV_SECRET_1:
+        description: 'Secret value written as {env_secret_1_key}=<value> in .env.local'
+        required: false
+      ENV_SECRET_2:
+        description: 'Secret value written as {env_secret_2_key}=<value> in .env.local'
+        required: false
+      ENV_SECRET_3:
+        description: 'Secret value written as {env_secret_3_key}=<value> in .env.local'
+        required: false
+      ENV_SECRET_4:
+        description: 'Secret value written as {env_secret_4_key}=<value> in .env.local'
+        required: false
+
+    outputs:
+      review_url:
+        description: 'Review URL for the last deployed contract (or the single deployment in no-contract mode)'
+        value: ${{ jobs.build_and_deploy.outputs.REVIEW_URL }}
+      contracts:
+        description: 'JSON array of contract names parsed from PR labels (pass to test job matrix)'
+        value: ${{ jobs.parse_labels.outputs.contracts }}
+      backend_environment:
+        description: 'Backend environment selected via label detection (e.g. staging or preprod)'
+        value: ${{ jobs.build_and_deploy.outputs.BACKEND_ENV }}
+      backend_url:
+        description: 'Backend URL selected via label detection'
+        value: ${{ jobs.build_and_deploy.outputs.BACKEND_URL }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # -- 1. Parse labels --------------------------------------------------------
+  # In no-contract mode, skip label parsing and emit a single-element contracts
+  # array containing an empty string so the build matrix runs exactly once.
+  parse_labels:
+    if: github.head_ref != 'main' && github.head_ref != 'dev'
+    runs-on: ubuntu-latest
+    outputs:
+      contracts: ${{ steps.get_labels.outputs.contracts }}
+      mode_suffix: ${{ steps.get_labels.outputs.mode_suffix }}
+    steps:
+      - name: Get PR labels
+        id: get_labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const requireContractLabel = ${{ inputs.require_contract_label }};
+            const modeLabelPrefix      = '${{ inputs.mode_label_prefix }}';
+            const requireModeLabel     = ${{ inputs.require_mode_label }};
+            const rawModeValueMap      = '${{ inputs.mode_value_map }}';
+
+            const labels = context.payload.pull_request.labels.map(l => l.name);
+
+            // ── No-contract mode ──────────────────────────────────────────
+            if (!requireContractLabel) {
+              core.setOutput('contracts', JSON.stringify(['']));
+              core.setOutput('mode_suffix', '');
+              return;
+            }
+
+            // ── Contract mode ─────────────────────────────────────────────
+            const contractLabels = labels.filter(l => l.startsWith('contract:'));
+            if (!contractLabels.length) {
+              core.setFailed('At least one contract:<name> label is required on the pull request.');
+              return;
+            }
+            const contracts = [...new Set(
+              contractLabels.map(l => l.split(':')[1]?.trim()).filter(Boolean)
+            )];
+            if (!contracts.length) {
+              core.setFailed('Contract labels are present but empty. Use the format contract:<name>.');
+              return;
+            }
+
+            // ── Mode ──────────────────────────────────────────────────────
+            const modePrefix = `${modeLabelPrefix}:`;
+            const modeLabel  = labels.find(l => l.startsWith(modePrefix));
+            if (requireModeLabel && !modeLabel) {
+              core.setFailed(`A ${modePrefix}<value> label is required on the pull request.`);
+              return;
+            }
+
+            let modeValue = modeLabel ? modeLabel.slice(modePrefix.length).trim() : '';
+
+            if (modeValue && rawModeValueMap) {
+              const map = Object.fromEntries(
+                rawModeValueMap
+                  .split(',')
+                  .map(p => p.split('='))
+                  .filter(([k, v]) => k && v)
+                  .map(([k, v]) => [k.trim(), v.trim()])
+              );
+              modeValue = map[modeValue] !== undefined ? map[modeValue] : modeValue.toLowerCase();
+            } else {
+              modeValue = modeValue.toLowerCase();
+            }
+
+            core.setOutput('contracts', JSON.stringify(contracts));
+            core.setOutput('mode_suffix', modeValue ? `-${modeValue}` : '');
+
+  # -- 2. Build and deploy (matrix per contract; single iteration in no-contract mode) --
+  build_and_deploy:
+    if: github.head_ref != 'main' && github.head_ref != 'dev'
+    needs: parse_labels
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        contract: ${{ fromJSON(needs.parse_labels.outputs.contracts) }}
+    # Environment name:
+    #   fixed_environment (no-contract mode) or {contract}{middle}{mode_suffix}-{suffix}
+    environment:
+      name: >-
+        ${{
+          inputs.fixed_environment != '' && inputs.fixed_environment
+          || format('{0}{1}{2}-{3}',
+               matrix.contract,
+               inputs.environment_middle,
+               needs.parse_labels.outputs.mode_suffix,
+               inputs.environment_suffix)
+        }}
+      url: https://$\{\{ steps.env.outputs.identifier }}.${{ inputs.review_domain }}
+    outputs:
+      REVIEW_URL:   ${{ steps.deploy.outputs.REVIEW_URL }}
+      BACKEND_ENV:  ${{ steps.backend.outputs.BACKEND_ENV }}
+      BACKEND_URL:  ${{ steps.backend.outputs.BACKEND_URL }}
+    steps:
+      # ── Compute review-site identifier ──────────────────────────────────────
+      - name: Process branch name
+        id: process-branch
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          BRANCH=$(echo "$BRANCH" | cut -c1-${{ inputs.branch_max_length }})
+          CONTRACT="${{ matrix.contract }}"
+          if [ -n "$CONTRACT" ]; then
+            PROCESSED_BRANCH="${BRANCH}-${CONTRACT}${{ inputs.branch_suffix }}"
+          else
+            PROCESSED_BRANCH="${BRANCH}${{ inputs.branch_suffix }}"
+          fi
+          echo "PROCESSED_BRANCH=$PROCESSED_BRANCH" >> $GITHUB_OUTPUT
+          echo "Using processed branch name: $PROCESSED_BRANCH"
+
+      - uses: priority-digital-health/review-site-name-action@main
+        id: env
+        with:
+          branch-name: ${{ steps.process-branch.outputs.PROCESSED_BRANCH }}
+
+      # ── Log deploy info ─────────────────────────────────────────────────────
+      - name: Echo environment information
+        run: |
+          CONTRACT="${{ matrix.contract }}"
+          if [ -n "${{ inputs.fixed_environment }}" ]; then
+            ENV_NAME="${{ inputs.fixed_environment }}"
+          elif [ -n "$CONTRACT" ]; then
+            ENV_NAME="${CONTRACT}${{ inputs.environment_middle }}${{ needs.parse_labels.outputs.mode_suffix }}-${{ inputs.environment_suffix }}"
+          else
+            ENV_NAME="${{ inputs.environment_suffix }}"
+          fi
+          echo "Deploying ${{ inputs.app }}"
+          echo "  Environment : $ENV_NAME"
+          echo "  Contract    : ${CONTRACT:-<none>}"
+          echo "  Review URL  : https://${{ steps.env.outputs.identifier }}.${{ inputs.review_domain }}"
+          echo "  Branch      : ${{ github.head_ref }}"
+
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ inputs.pnpm_version }}
+
+      - name: Setup Node ${{ inputs.node_version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          registry-url: https://npm.pkg.github.com/
+          scope: '@priority-digital-health'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Cache node_modules
+        id: node-modules-cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run lint
+        run: pnpm lint --max-warnings 0
+
+      # Optional unit tests inside the build job (e.g. pnpm vitest run)
+      - name: Run unit tests
+        if: inputs.unit_test_command != ''
+        run: ${{ inputs.unit_test_command }}
+        env:
+          CI: true
+
+      # ── Backend label detection (optional) ──────────────────────────────────
+      - name: Detect backend environment from PR labels
+        id: backend
+        if: inputs.backend_label_prefix != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BACKEND_LABEL_PREFIX: ${{ inputs.backend_label_prefix }}
+          BACKEND_LABEL_MAP: ${{ inputs.backend_label_map }}
+          BACKEND_DEFAULT_URL: ${{ inputs.backend_default_url }}
+        run: |
+          LABELS=$(curl -sf -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" \
+            | jq -r '.labels[].name')
+
+          echo "PR labels: $LABELS"
+
+          BACKEND_ENV="default"
+          BACKEND_URL="$BACKEND_DEFAULT_URL"
+
+          if [ -n "$BACKEND_LABEL_MAP" ]; then
+            while IFS='=' read -r key url; do
+              key=$(echo "$key" | tr -d '"{}' | xargs)
+              url=$(echo "$url" | tr -d '"{},' | xargs)
+              LABEL="${BACKEND_LABEL_PREFIX}:${key}"
+              if echo "$LABELS" | grep -qF "$LABEL"; then
+                BACKEND_ENV="$key"
+                BACKEND_URL="$url"
+                echo "Matched label: $LABEL -> $url"
+                break
+              fi
+            done < <(echo "$BACKEND_LABEL_MAP" | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          for k, v in data.items():
+              print(f'{k}={v}')
+          ")
+          fi
+
+          echo "Selected backend: $BACKEND_ENV ($BACKEND_URL)"
+          echo "BACKEND_ENV=$BACKEND_ENV" >> $GITHUB_OUTPUT
+          echo "BACKEND_URL=$BACKEND_URL" >> $GITHUB_OUTPUT
+
+      # ── Write .env.local ────────────────────────────────────────────────────
+      - uses: priority-digital-health/github-actions/.github/actions/env-setup@main
+        with:
+          env_file_content: ${{ vars.ENV_FILE_CONTENT }}
+          backend_env_var: ${{ inputs.backend_env_var }}
+          backend_url: ${{ steps.backend.outputs.BACKEND_URL }}
+          env_secret_1_key: ${{ inputs.env_secret_1_key }}
+          env_secret_1_value: ${{ secrets.ENV_SECRET_1 }}
+          env_secret_2_key: ${{ inputs.env_secret_2_key }}
+          env_secret_2_value: ${{ secrets.ENV_SECRET_2 }}
+          env_secret_3_key: ${{ inputs.env_secret_3_key }}
+          env_secret_3_value: ${{ secrets.ENV_SECRET_3 }}
+          env_secret_4_key: ${{ inputs.env_secret_4_key }}
+          env_secret_4_value: ${{ secrets.ENV_SECRET_4 }}
+
+      # ── Build ───────────────────────────────────────────────────────────────
+      # build_command override, or:
+      #   contract mode   → pnpm build --mode {contract}{mode_suffix}
+      #   no-contract mode → pnpm build
+      - name: Build
+        run: |
+          CONTRACT="${{ matrix.contract }}"
+          if [ -n "${{ inputs.build_command }}" ]; then
+            ${{ inputs.build_command }}
+          elif [ -n "$CONTRACT" ]; then
+            pnpm build --mode ${CONTRACT}${{ needs.parse_labels.outputs.mode_suffix }}
+          else
+            pnpm build
+          fi
+
+      # ── Deploy to S3 ────────────────────────────────────────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION || 'eu-west-2' }}
+
+      - name: Upload to S3
+        run: |
+          aws s3 sync ./${{ inputs.build_directory }} \
+            s3://${{ inputs.s3_bucket }}/${{ steps.env.outputs.identifier }}/ \
+            --delete
+
+      - name: Set review URL output
+        id: deploy
+        run: |
+          REVIEW_URL="https://${{ steps.env.outputs.identifier }}.${{ inputs.review_domain }}"
+          echo "REVIEW_URL=$REVIEW_URL" >> $GITHUB_OUTPUT
+          echo "### Review deployed: ${{ inputs.app }}" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** $REVIEW_URL" >> $GITHUB_STEP_SUMMARY
+          CONTRACT="${{ matrix.contract }}"
+          [ -n "$CONTRACT" ] && echo "**Contract:** $CONTRACT" >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Upload review URL artifact
+        id: review_artifact
+        env:
+          REVIEW_URL: ${{ steps.deploy.outputs.REVIEW_URL }}
+        run: |
+          CONTRACT="${{ matrix.contract }}"
+          LABEL="${CONTRACT:-no-contract}"
+          FILENAME="review-url-${LABEL}.json"
+          echo "{\"contract\":\"${LABEL}\",\"url\":\"${REVIEW_URL}\"}" > "$FILENAME"
+          echo "ARTIFACT_FILE=$FILENAME" >> $GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: review-url-${{ matrix.contract || 'no-contract' }}
+          path: ${{ steps.review_artifact.outputs.ARTIFACT_FILE }}

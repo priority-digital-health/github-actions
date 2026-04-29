@@ -1,0 +1,184 @@
+name: Pre-Deployment Validation
+
+on:
+  workflow_call:
+    inputs:
+      lint_command:
+        type: string
+        default: 'pnpm lint'
+        description: 'Lint command to run (e.g., pnpm lint, npm run lint)'
+      typecheck_command:
+        type: string
+        default: 'pnpm typecheck'
+        description: 'Type check command (e.g., pnpm typecheck, npm run type-check)'
+      build_command:
+        type: string
+        default: 'pnpm build'
+        description: 'Build command to run (e.g., pnpm build, npm run build)'
+      skip_lint:
+        type: boolean
+        default: false
+        description: 'Skip linting checks'
+      skip_typecheck:
+        type: boolean
+        default: false
+        description: 'Skip type checking'
+      skip_build:
+        type: boolean
+        default: false
+        description: 'Skip build validation'
+      skip_secret_scan:
+        type: boolean
+        default: false
+        description: 'Skip secret scanning'
+      timeout_minutes:
+        type: number
+        default: 30
+        description: 'Job timeout in minutes'
+
+    outputs:
+      validation_passed:
+        description: 'Whether all validation checks passed'
+        value: ${{ jobs.validate.outputs.validation_passed }}
+      lint_status:
+        description: 'Lint check status'
+        value: ${{ jobs.validate.outputs.lint_status }}
+      typecheck_status:
+        description: 'Type check status'
+        value: ${{ jobs.validate.outputs.typecheck_status }}
+      build_status:
+        description: 'Build status'
+        value: ${{ jobs.validate.outputs.build_status }}
+      secrets_status:
+        description: 'Secret scan status'
+        value: ${{ jobs.validate.outputs.secrets_status }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    outputs:
+      validation_passed: ${{ steps.summary.outputs.validation_passed }}
+      lint_status: ${{ steps.lint.outcome }}
+      typecheck_status: ${{ steps.typecheck.outcome }}
+      build_status: ${{ steps.build.outcome }}
+      secrets_status: ${{ steps.secrets.outcome }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.20.0'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run lint checks
+        if: ${{ !inputs.skip_lint }}
+        id: lint
+        continue-on-error: true
+        run: ${{ inputs.lint_command }}
+
+      - name: Run type checks
+        if: ${{ !inputs.skip_typecheck }}
+        id: typecheck
+        continue-on-error: true
+        run: ${{ inputs.typecheck_command }}
+
+      - name: Run build
+        if: ${{ !inputs.skip_build }}
+        id: build
+        continue-on-error: true
+        run: ${{ inputs.build_command }}
+
+      - name: Scan for secrets
+        if: ${{ !inputs.skip_secret_scan }}
+        id: secrets
+        continue-on-error: true
+        run: |
+          # Basic secret pattern scanning using grep
+          echo "Scanning for potential secrets in code..."
+          
+          # Check for common secret patterns
+          SECRET_PATTERNS=(
+            'PRIVATE_KEY'
+            'AWS_SECRET'
+            'API_KEY.*='
+            'password.*='
+            'token.*='
+            'secret.*='
+          )
+          
+          SECRETS_FOUND=0
+          for pattern in "${SECRET_PATTERNS[@]}"; do
+            if grep -r -i "$pattern" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.json" \
+              --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=.next . 2>/dev/null | grep -v "\.git"; then
+              echo "⚠️  Potential secret pattern found: $pattern"
+              SECRETS_FOUND=$((SECRETS_FOUND + 1))
+            fi
+          done
+          
+          if [ "$SECRETS_FOUND" -gt 0 ]; then
+            echo "❌ Found $SECRETS_FOUND potential secret patterns. Please remove before deploying."
+            exit 1
+          else
+            echo "✅ No obvious secrets detected"
+            exit 0
+          fi
+
+      - name: Generate validation summary
+        if: always()
+        id: summary
+        run: |
+          LINT_STATUS="${{ steps.lint.outcome }}"
+          TYPECHECK_STATUS="${{ steps.typecheck.outcome }}"
+          BUILD_STATUS="${{ steps.build.outcome }}"
+          SECRETS_STATUS="${{ steps.secrets.outcome }}"
+          
+          # Determine if we skip certain checks
+          SKIP_LINT="${{ inputs.skip_lint }}"
+          SKIP_TYPECHECK="${{ inputs.skip_typecheck }}"
+          SKIP_BUILD="${{ inputs.skip_build }}"
+          SKIP_SECRETS="${{ inputs.skip_secret_scan }}"
+          
+          # Set default for skipped checks
+          [ "$SKIP_LINT" = "true" ] && LINT_STATUS="skipped"
+          [ "$SKIP_TYPECHECK" = "true" ] && TYPECHECK_STATUS="skipped"
+          [ "$SKIP_BUILD" = "true" ] && BUILD_STATUS="skipped"
+          [ "$SKIP_SECRETS" = "true" ] && SECRETS_STATUS="skipped"
+          
+          echo "## 🛡️ Pre-Deployment Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 📝 Linting | $LINT_STATUS |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔍 Type Checking | $TYPECHECK_STATUS |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🏗️  Build | $BUILD_STATUS |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔐 Secret Scan | $SECRETS_STATUS |" >> $GITHUB_STEP_SUMMARY
+          
+          # Determine overall pass/fail
+          if [[ "$LINT_STATUS" != "success" && "$LINT_STATUS" != "skipped" ]] || \
+             [[ "$TYPECHECK_STATUS" != "success" && "$TYPECHECK_STATUS" != "skipped" ]] || \
+             [[ "$BUILD_STATUS" != "success" && "$BUILD_STATUS" != "skipped" ]] || \
+             [[ "$SECRETS_STATUS" != "success" && "$SECRETS_STATUS" != "skipped" ]]; then
+            echo "validation_passed=false" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **Pre-deployment validation FAILED** — fix issues before deploying" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "validation_passed=true" >> $GITHUB_OUTPUT
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **All pre-deployment checks passed**" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi

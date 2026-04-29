@@ -1,0 +1,30 @@
+name: UI Jira Notify Orchestrator
+
+on:
+  workflow_call:
+    inputs:
+      review_url:
+        description: 'Review or deployment URL written to Jira customfield_10050'
+        required: false
+        type: string
+        default: ''
+      jira_comment_suffix:
+        description: 'Optional text appended to deployment Jira comment'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      JIRA_BASE_URL:
+        required: false
+      JIRA_USER_EMAIL:
+        required: false
+      JIRA_API_TOKEN:
+        required: false
+
+jobs:
+  notify:
+    uses: priority-digital-health/github-actions/.github/workflows/ui-update-jira.yml@main
+    with:
+      review_url: ${{ inputs.review_url }}
+      jira_comment_suffix: ${{ inputs.jira_comment_suffix }}
+    secrets: inherit

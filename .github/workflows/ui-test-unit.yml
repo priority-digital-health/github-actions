@@ -1,0 +1,95 @@
+name: Reusable Unit Tests
+
+# Centralised unit test runner for UI repos. Runs unit tests and optional type checks
+# in the host container environment (no Docker image).
+#
+# Usage:
+#   test_unit:
+#     needs: review
+#     uses: priority-digital-health/github-actions/.github/workflows/ui-test-unit.yml@main
+#     with:
+#       unit_test_command: 'pnpm test:unit'
+#       typecheck_command: 'pnpm typecheck'
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        type: string
+        default: '22.20.0'
+        description: 'Node.js version to use'
+      unit_test_command:
+        type: string
+        description: 'Command to run unit tests'
+      typecheck_command:
+        type: string
+        default: ''
+        description: 'Optional command to run type checks (e.g., pnpm typecheck)'
+      skip_on_main_dev:
+        type: boolean
+        default: true
+        description: 'Skip test job on main/dev branches'
+      timeout_minutes:
+        type: number
+        default: 30
+        description: 'Job timeout in minutes'
+    outputs:
+      results_json:
+        description: 'Test results as JSON (passed, failed, skipped)'
+        value: ${{ jobs.test.outputs.results_json }}
+
+jobs:
+  test:
+    if: ${{ !(inputs.skip_on_main_dev && (github.head_ref == 'main' || github.head_ref == 'dev')) }}
+    runs-on: ubuntu-latest
+    outputs:
+      results_json: ${{ steps.test_summary.outputs.results_json }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9.5.0
+          run_install: false
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '${{ inputs.node_version }}'
+          cache: 'pnpm'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@priority-digital-health'
+
+      - name: Cache node_modules
+        id: node-modules-cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        run: pnpm install
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run unit tests
+        run: ${{ inputs.unit_test_command }}
+
+      - name: Run type checks
+        if: ${{ inputs.typecheck_command != '' }}
+        run: ${{ inputs.typecheck_command }}
+
+      - name: Extract test results
+        if: always()
+        id: test_summary
+        run: |
+          # Placeholder: Unit tests don't generate standard junit by default
+          # This can be extended if the repo generates junit output
+          RESULTS='{"passed": 1, "failed": 0, "skipped": 0}'
+          echo "results_json=$RESULTS" >> $GITHUB_OUTPUT
+

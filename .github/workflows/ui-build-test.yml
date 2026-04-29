@@ -1,0 +1,348 @@
+name: UI Build, Deploy & Test Orchestrator
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        description: 'App name used in logs and summaries'
+        required: true
+        type: string
+
+      node_version:
+        description: 'Shared Node.js version used by deploy and test workflows'
+        required: false
+        type: string
+        default: '22.20.0'
+      pnpm_version:
+        description: 'pnpm version for build/deploy workflow'
+        required: false
+        type: string
+        default: '9.5.0'
+      build_directory:
+        description: 'Build output directory uploaded to S3'
+        required: false
+        type: string
+        default: 'dist'
+      build_command:
+        description: 'Optional build command override for deploy job'
+        required: false
+        type: string
+        default: ''
+      review_unit_test_command:
+        description: 'Optional unit test command to run inside deploy job before build'
+        required: false
+        type: string
+        default: ''
+
+      branch_max_length:
+        description: 'Maximum branch chars used in review-site identifier'
+        required: false
+        type: number
+        default: 30
+      branch_suffix:
+        description: 'Static suffix appended after contract slug (standardized default)'
+        required: false
+        type: string
+        default: ''
+
+      require_contract_label:
+        description: 'Set false to skip contract label parsing and run a single deployment'
+        required: false
+        type: boolean
+        default: true
+      fixed_environment:
+        description: 'Fixed environment name when require_contract_label=false'
+        required: false
+        type: string
+        default: ''
+      environment_middle:
+        description: 'Middle env segment inserted between contract and mode'
+        required: false
+        type: string
+        default: ''
+      environment_suffix:
+        description: 'Trailing env name segment'
+        required: false
+        type: string
+        default: 'preprod'
+
+      s3_bucket:
+        description: 'S3 bucket used for deployment'
+        required: false
+        type: string
+        default: 'pdhdev.co.uk'
+      review_domain:
+        description: 'Domain used for public review URL (standardized default)'
+        required: false
+        type: string
+        default: 'pdhdev.co.uk'
+
+      mode_label_prefix:
+        description: 'Label prefix for optional build mode label'
+        required: false
+        type: string
+        default: 'mode'
+      require_mode_label:
+        description: 'Fail when no mode label is present'
+        required: false
+        type: boolean
+        default: false
+      mode_value_map:
+        description: 'Comma-separated Original=mapped pairs for mode label values'
+        required: false
+        type: string
+        default: ''
+
+      backend_label_prefix:
+        description: 'Optional label prefix for backend detection'
+        required: false
+        type: string
+        default: ''
+      backend_label_map:
+        description: 'JSON mapping of backend labels to backend URLs'
+        required: false
+        type: string
+        default: ''
+      backend_default_url:
+        description: 'Default backend URL when no label match is found'
+        required: false
+        type: string
+        default: ''
+      backend_env_var:
+        description: 'Name of env var written to .env.local for backend URL'
+        required: false
+        type: string
+        default: ''
+
+      env_secret_1_key:
+        description: '.env.local key name for ENV_SECRET_1'
+        required: false
+        type: string
+        default: ''
+      env_secret_2_key:
+        description: '.env.local key name for ENV_SECRET_2'
+        required: false
+        type: string
+        default: ''
+      env_secret_3_key:
+        description: '.env.local key name for ENV_SECRET_3'
+        required: false
+        type: string
+        default: ''
+      env_secret_4_key:
+        description: '.env.local key name for ENV_SECRET_4'
+        required: false
+        type: string
+        default: ''
+
+      run_validation:
+        description: 'Run pre-deploy validation checks'
+        required: false
+        type: boolean
+        default: true
+      validation_lint_command:
+        description: 'Lint command for validation workflow'
+        required: false
+        type: string
+        default: 'pnpm lint'
+      validation_typecheck_command:
+        description: 'Typecheck command for validation workflow'
+        required: false
+        type: string
+        default: 'pnpm typecheck'
+      validation_build_command:
+        description: 'Build command for validation workflow'
+        required: false
+        type: string
+        default: 'pnpm build'
+      validation_skip_secret_scan:
+        description: 'Skip secret scanning in validation workflow'
+        required: false
+        type: boolean
+        default: false
+
+      run_unit_tests:
+        description: 'Run dedicated unit test workflow'
+        required: false
+        type: boolean
+        default: false
+      unit_test_command:
+        description: 'Unit test command for dedicated unit test workflow'
+        required: false
+        type: string
+        default: ''
+      typecheck_command:
+        description: 'Optional typecheck command for dedicated unit test workflow'
+        required: false
+        type: string
+        default: ''
+
+      run_playwright_tests:
+        description: 'Run Playwright workflow after deployment'
+        required: false
+        type: boolean
+        default: true
+      playwright_use_matrix:
+        description: 'Use contracts matrix for Playwright tests'
+        required: false
+        type: boolean
+        default: false
+      playwright_version:
+        description: 'Playwright Docker image tag'
+        required: false
+        type: string
+        default: 'v1.52.0'
+      playwright_test_command:
+        description: 'Playwright command override'
+        required: false
+        type: string
+        default: 'pnpm exec playwright test'
+
+      run_test_report:
+        description: 'Post consolidated test report comment'
+        required: false
+        type: boolean
+        default: true
+
+      run_health_check:
+        description: 'Run post-deployment health checks'
+        required: false
+        type: boolean
+        default: false
+      health_check_url:
+        description: 'Health endpoint URL used by rollback detection workflow'
+        required: false
+        type: string
+        default: ''
+      rollback_enabled:
+        description: 'Enable automatic rollback trigger when health checks fail'
+        required: false
+        type: boolean
+        default: false
+      health_max_retries:
+        description: 'Health check retry attempts'
+        required: false
+        type: number
+        default: 3
+      health_retry_delay:
+        description: 'Delay between health check retries (seconds)'
+        required: false
+        type: number
+        default: 10
+
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        required: false
+      ENV_SECRET_1:
+        required: false
+      ENV_SECRET_2:
+        required: false
+      ENV_SECRET_3:
+        required: false
+      ENV_SECRET_4:
+        required: false
+
+    outputs:
+      review_url:
+        description: 'Review URL from deployment workflow'
+        value: ${{ jobs.review.outputs.review_url }}
+      contracts:
+        description: 'JSON contracts list parsed from PR labels'
+        value: ${{ jobs.review.outputs.contracts }}
+      backend_environment:
+        description: 'Backend environment selected in deploy workflow'
+        value: ${{ jobs.review.outputs.backend_environment }}
+      backend_url:
+        description: 'Backend URL selected in deploy workflow'
+        value: ${{ jobs.review.outputs.backend_url }}
+
+jobs:
+  validate:
+    if: inputs.run_validation
+    uses: priority-digital-health/github-actions/.github/workflows/ui-pre-deploy-validation.yml@main
+    with:
+      lint_command: ${{ inputs.validation_lint_command }}
+      typecheck_command: ${{ inputs.validation_typecheck_command }}
+      build_command: ${{ inputs.validation_build_command }}
+      skip_secret_scan: ${{ inputs.validation_skip_secret_scan }}
+    secrets: inherit
+
+  review:
+    needs: [validate]
+    if: ${{ always() && (needs.validate.result == 'success' || needs.validate.result == 'skipped') }}
+    uses: priority-digital-health/github-actions/.github/workflows/ui-review.yml@main
+    with:
+      app: ${{ inputs.app }}
+      node_version: ${{ inputs.node_version }}
+      pnpm_version: ${{ inputs.pnpm_version }}
+      build_directory: ${{ inputs.build_directory }}
+      build_command: ${{ inputs.build_command }}
+      unit_test_command: ${{ inputs.review_unit_test_command }}
+      branch_max_length: ${{ inputs.branch_max_length }}
+      branch_suffix: ${{ inputs.branch_suffix }}
+      require_contract_label: ${{ inputs.require_contract_label }}
+      fixed_environment: ${{ inputs.fixed_environment }}
+      environment_middle: ${{ inputs.environment_middle }}
+      environment_suffix: ${{ inputs.environment_suffix }}
+      s3_bucket: ${{ inputs.s3_bucket }}
+      review_domain: ${{ inputs.review_domain }}
+      mode_label_prefix: ${{ inputs.mode_label_prefix }}
+      require_mode_label: ${{ inputs.require_mode_label }}
+      mode_value_map: ${{ inputs.mode_value_map }}
+      backend_label_prefix: ${{ inputs.backend_label_prefix }}
+      backend_label_map: ${{ inputs.backend_label_map }}
+      backend_default_url: ${{ inputs.backend_default_url }}
+      backend_env_var: ${{ inputs.backend_env_var }}
+      env_secret_1_key: ${{ inputs.env_secret_1_key }}
+      env_secret_2_key: ${{ inputs.env_secret_2_key }}
+      env_secret_3_key: ${{ inputs.env_secret_3_key }}
+      env_secret_4_key: ${{ inputs.env_secret_4_key }}
+    secrets: inherit
+
+  test_unit:
+    needs: [review]
+    if: ${{ inputs.run_unit_tests && inputs.unit_test_command != '' }}
+    uses: priority-digital-health/github-actions/.github/workflows/ui-test-unit.yml@main
+    with:
+      node_version: ${{ inputs.node_version }}
+      unit_test_command: ${{ inputs.unit_test_command }}
+      typecheck_command: ${{ inputs.typecheck_command }}
+
+  test_playwright:
+    needs: [review]
+    if: inputs.run_playwright_tests
+    uses: priority-digital-health/github-actions/.github/workflows/ui-test-playwright.yml@main
+    with:
+      playwright_version: ${{ inputs.playwright_version }}
+      node_version: ${{ inputs.node_version }}
+      test_command: ${{ inputs.playwright_test_command }}
+      use_matrix: ${{ inputs.playwright_use_matrix }}
+      contracts_json: ${{ needs.review.outputs.contracts }}
+      branch_name: ${{ github.head_ref }}
+      branch_max_length: ${{ inputs.branch_max_length }}
+      branch_suffix: ${{ inputs.branch_suffix }}
+      review_domain: ${{ inputs.review_domain }}
+      review_url: ${{ needs.review.outputs.review_url }}
+
+  report_tests:
+    if: ${{ always() && inputs.run_test_report }}
+    needs: [review, test_playwright, test_unit]
+    uses: priority-digital-health/github-actions/.github/workflows/ui-report-tests.yml@main
+    with:
+      playwright_results: ${{ needs.test_playwright.outputs.results_json || '' }}
+      unit_results: ${{ needs.test_unit.outputs.results_json || '' }}
+      post_comment: true
+
+  post_deploy_check:
+    if: ${{ always() && inputs.run_health_check && inputs.health_check_url != '' }}
+    needs: [review, test_playwright, test_unit, report_tests]
+    uses: priority-digital-health/github-actions/.github/workflows/ui-rollback-detection.yml@main
+    with:
+      environment: ${{ inputs.fixed_environment != '' && inputs.fixed_environment || inputs.environment_suffix }}
+      health_check_url: ${{ inputs.health_check_url }}
+      rollback_enabled: ${{ inputs.rollback_enabled }}
+      max_retries: ${{ inputs.health_max_retries }}
+      retry_delay: ${{ inputs.health_retry_delay }}
+    secrets: inherit

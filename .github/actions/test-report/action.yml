@@ -1,0 +1,95 @@
+name: Generate Test Report
+description: Generates a markdown test report from test artifacts and coverage data
+
+inputs:
+  test_type:
+    description: 'Type of tests (e.g., "Unit Tests", "Playwright", "Integration")'
+    required: true
+  results_json:
+    description: 'JSON with test results (e.g., {"passed": 42, "failed": 0, "skipped": 2})'
+    required: false
+    default: ''
+  coverage_percent:
+    description: 'Code coverage percentage (0-100)'
+    required: false
+    default: ''
+  report_url:
+    description: 'URL to detailed test report'
+    required: false
+    default: ''
+  duration_seconds:
+    description: 'Test execution time in seconds'
+    required: false
+    default: ''
+
+outputs:
+  report_markdown:
+    description: 'Generated markdown report section'
+    value: ${{ steps.generate.outputs.markdown }}
+
+runs:
+  using: composite
+  steps:
+    - name: Generate test report
+      id: generate
+      shell: bash
+      run: |
+        {
+          echo "#### ${{ inputs.test_type }}"
+          echo ""
+          
+          # Coverage badge
+          if [ -n "${{ inputs.coverage_percent }}" ]; then
+            COVERAGE=${{ inputs.coverage_percent }}
+            if (( $(echo "$COVERAGE >= 80" | bc -l) )); then
+              BADGE_COLOR="green"
+            elif (( $(echo "$COVERAGE >= 60" | bc -l) )); then
+              BADGE_COLOR="yellow"
+            else
+              BADGE_COLOR="red"
+            fi
+            echo "![Coverage: ${COVERAGE}%](https://img.shields.io/badge/coverage-${COVERAGE}%25-${BADGE_COLOR})"
+            echo ""
+          fi
+          
+          # Test results table
+          if [ -n "${{ inputs.results_json }}" ]; then
+            RESULTS='${{ inputs.results_json }}'
+            PASSED=$(echo "$RESULTS" | grep -o '"passed":[0-9]*' | cut -d: -f2)
+            FAILED=$(echo "$RESULTS" | grep -o '"failed":[0-9]*' | cut -d: -f2)
+            SKIPPED=$(echo "$RESULTS" | grep -o '"skipped":[0-9]*' | cut -d: -f2)
+            TOTAL=$((PASSED + FAILED + SKIPPED))
+            
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Passed | ✅ $PASSED |"
+            if [ "$FAILED" -gt 0 ]; then
+              echo "| Failed | ❌ $FAILED |"
+            fi
+            if [ "$SKIPPED" -gt 0 ]; then
+              echo "| Skipped | ⏭️ $SKIPPED |"
+            fi
+            echo "| Total | $TOTAL |"
+            echo ""
+          fi
+          
+          # Duration
+          if [ -n "${{ inputs.duration_seconds }}" ]; then
+            DURATION=${{ inputs.duration_seconds }}
+            MINUTES=$((DURATION / 60))
+            SECONDS=$((DURATION % 60))
+            echo "⏱️ Duration: ${MINUTES}m ${SECONDS}s"
+            echo ""
+          fi
+          
+          # Report link
+          if [ -n "${{ inputs.report_url }}" ]; then
+            echo "[📊 Full Report](${{ inputs.report_url }})"
+            echo ""
+          fi
+        } > /tmp/report.md
+        
+        MARKDOWN=$(cat /tmp/report.md)
+        echo "markdown<<EOF" >> $GITHUB_OUTPUT
+        echo "$MARKDOWN" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT

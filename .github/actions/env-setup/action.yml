@@ -1,0 +1,87 @@
+name: Setup .env.local
+description: Assemble .env.local from static vars, backend detection, and secrets
+
+inputs:
+  env_file_content:
+    description: 'Static environment variables (one per line, KEY=VALUE format)'
+    required: false
+    default: ''
+
+  backend_env_var:
+    description: 'Environment variable name to inject backend URL (e.g., VITE_APP_PLATFORM_SDK_BASE_URL)'
+    required: false
+    default: ''
+
+  backend_url:
+    description: 'Backend URL to inject into backend_env_var'
+    required: false
+    default: ''
+
+  env_secret_1_key:
+    description: '.env.local variable name for secret 1'
+    required: false
+    default: ''
+  env_secret_1_value:
+    description: 'Secret 1 value'
+    required: false
+    default: ''
+
+  env_secret_2_key:
+    description: '.env.local variable name for secret 2'
+    required: false
+    default: ''
+  env_secret_2_value:
+    description: 'Secret 2 value'
+    required: false
+    default: ''
+
+  env_secret_3_key:
+    description: '.env.local variable name for secret 3'
+    required: false
+    default: ''
+  env_secret_3_value:
+    description: 'Secret 3 value'
+    required: false
+    default: ''
+
+  env_secret_4_key:
+    description: '.env.local variable name for secret 4'
+    required: false
+    default: ''
+  env_secret_4_value:
+    description: 'Secret 4 value'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Write .env.local (static vars)
+      if: inputs.env_file_content != ''
+      shell: bash
+      run: printf '%s\n' "$ENV_FILE_CONTENT" > .env.local
+      env:
+        ENV_FILE_CONTENT: ${{ inputs.env_file_content }}
+
+    - name: Append backend URL to .env.local
+      if: inputs.backend_env_var != '' && inputs.backend_url != ''
+      shell: bash
+      run: |
+        echo "${{ inputs.backend_env_var }}=${{ inputs.backend_url }}" >> .env.local
+
+    - name: Append secret env vars to .env.local
+      shell: bash
+      run: |
+        [ -n "$S1_KEY" ] && [ -n "$S1_VAL" ] && echo "${S1_KEY}=${S1_VAL}" >> .env.local || true
+        [ -n "$S2_KEY" ] && [ -n "$S2_VAL" ] && echo "${S2_KEY}=${S2_VAL}" >> .env.local || true
+        [ -n "$S3_KEY" ] && [ -n "$S3_VAL" ] && echo "${S3_KEY}=${S3_VAL}" >> .env.local || true
+        [ -n "$S4_KEY" ] && [ -n "$S4_VAL" ] && echo "${S4_KEY}=${S4_VAL}" >> .env.local || true
+      env:
+        S1_KEY: ${{ inputs.env_secret_1_key }}
+        S1_VAL: ${{ inputs.env_secret_1_value }}
+        S2_KEY: ${{ inputs.env_secret_2_key }}
+        S2_VAL: ${{ inputs.env_secret_2_value }}
+        S3_KEY: ${{ inputs.env_secret_3_key }}
+        S3_VAL: ${{ inputs.env_secret_3_value }}
+        S4_KEY: ${{ inputs.env_secret_4_key }}
+        S4_VAL: ${{ inputs.env_secret_4_value }}

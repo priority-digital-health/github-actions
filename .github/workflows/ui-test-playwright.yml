@@ -1,0 +1,199 @@
+name: Reusable Playwright Tests
+
+# Centralized Playwright test runner for UI repos. Supports both matrix mode
+# (multiple contracts) and single-run mode. Handles environment setup, branch
+# name derivation, and test reporting.
+#
+# Usage (no-matrix, amarahealth-ui / platform-ui):
+#   test:
+#     needs: review
+#     uses: priority-digital-health/github-actions/.github/workflows/ui-test-playwright.yml@main
+#     with:
+#       review_url: ${{ needs.review.outputs.review_url }}
+#
+# Usage (matrix, assessments-ui / booking-engine / mailing-list):
+#   test:
+#     needs: review
+#     uses: priority-digital-health/github-actions/.github/workflows/ui-test-playwright.yml@main
+#     with:
+#       use_matrix: true
+#       contracts_json: ${{ needs.review.outputs.contracts }}
+#       branch_name: ${{ github.head_ref }}
+#       branch_max_length: 30
+#       branch_suffix: ''
+#       # For mailing-list: branch_max_length: 20, branch_suffix: '-ml'
+
+on:
+  workflow_call:
+    inputs:
+      playwright_version:
+        type: string
+        default: 'v1.52.0'
+        description: 'Docker image tag for Playwright (e.g., v1.52.0, v1.54.2)'
+      node_version:
+        type: string
+        default: '22.20.0'
+        description: 'Node.js version to use'
+      test_command:
+        type: string
+        default: 'pnpm exec playwright test'
+        description: 'Command to run tests'
+      use_matrix:
+        type: boolean
+        default: false
+        description: 'Use matrix strategy over contracts'
+      contracts_json:
+        type: string
+        description: 'JSON array of contracts for matrix mode (required if use_matrix=true)'
+      branch_name:
+        type: string
+        description: 'GitHub head ref for branch name derivation in matrix mode'
+      branch_max_length:
+        type: number
+        default: 30
+        description: 'Max length of branch prefix for URL derivation (matrix mode)'
+      branch_suffix:
+        type: string
+        default: ''
+        description: 'Suffix to append to branch name (matrix mode)'
+      review_domain:
+        type: string
+        default: 'pdhdev.co.uk'
+        description: 'Domain used to build matrix-mode REVIEW_URL'
+      review_url:
+        type: string
+        description: 'Review URL for non-matrix mode (required if use_matrix=false)'
+      skip_on_main_dev:
+        type: boolean
+        default: true
+        description: 'Skip test job on main/dev branches'
+      timeout_minutes:
+        type: number
+        default: 60
+        description: 'Job timeout in minutes'
+    outputs:
+      results_json:
+        description: 'Test results as JSON (passed, failed, skipped)'
+        value: ${{ jobs.test.outputs.results_json }}
+
+jobs:
+  test:
+    if: ${{ !(inputs.skip_on_main_dev && (github.head_ref == 'main' || github.head_ref == 'dev')) }}
+    runs-on: ubuntu-latest
+    outputs:
+      results_json: ${{ steps.test_summary.outputs.results_json }}
+    strategy:
+      matrix:
+        contract: ${{ inputs.use_matrix && fromJSON(inputs.contracts_json) || fromJSON('[""]') }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    container:
+      image: mcr.microsoft.com/playwright:${{ inputs.playwright_version }}-jammy
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      HOME: /root
+      CI: true
+      TEST_USER: ${{ vars.TEST_USER }}
+    steps:
+      - name: Set review URL (non-matrix mode)
+        if: ${{ !inputs.use_matrix }}
+        run: echo "REVIEW_URL=${{ inputs.review_url }}" >> $GITHUB_ENV
+
+      - name: Derive review URL for this contract (matrix mode)
+        if: ${{ inputs.use_matrix }}
+        id: process-branch
+        run: |
+          BRANCH="${{ inputs.branch_name }}"
+          BRANCH=$(echo "$BRANCH" | cut -c1-${{ inputs.branch_max_length }})
+          PROCESSED_BRANCH="${BRANCH}-${{ matrix.contract }}${{ inputs.branch_suffix }}"
+          echo "PROCESSED_BRANCH=$PROCESSED_BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Resolve review site name (matrix mode)
+        if: ${{ inputs.use_matrix }}
+        uses: priority-digital-health/review-site-name-action@main
+        id: env
+        with:
+          branch-name: ${{ steps.process-branch.outputs.PROCESSED_BRANCH }}
+
+      - name: Set derived REVIEW_URL (matrix mode)
+        if: ${{ inputs.use_matrix }}
+        run: |
+          echo "REVIEW_URL=https://${{ steps.env.outputs.identifier }}.${{ inputs.review_domain }}" >> $GITHUB_ENV
+
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9.5.0
+          run_install: false
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '${{ inputs.node_version }}'
+          cache: 'pnpm'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@priority-digital-health'
+
+      - name: Setup Docker config directory
+        run: |
+          mkdir -p /root/.docker
+          chmod 700 /root/.docker
+          touch /root/.docker/config.json
+          chmod 600 /root/.docker/config.json
+
+      - name: Cache node_modules
+        id: node-modules-cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        run: pnpm install
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run tests
+        run: ${{ inputs.test_command }}
+        env:
+          CI: true
+          REVIEW_URL: ${{ env.REVIEW_URL }}
+
+      - name: Publish Test Report
+        if: always()
+        uses: mikepenz/action-junit-report@v3
+        with:
+          report_paths: 'playwright-report/junit.xml'
+          check_name: 'Playwright Test Report'
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright_report_${{ github.job }}${{ inputs.use_matrix && format('_{0}', matrix.contract) || '' }}
+          path: playwright-report/
+          retention-days: 1
+
+      - name: Extract test results
+        if: always()
+        id: test_summary
+        run: |
+          if [ -f "playwright-report/junit.xml" ]; then
+            PASSED=$(grep -c '<testcase' playwright-report/junit.xml || echo 0)
+            FAILED=$(grep -c '<failure' playwright-report/junit.xml || echo 0)
+            SKIPPED=$(grep -c '<skipped' playwright-report/junit.xml || echo 0)
+          else
+            PASSED=0
+            FAILED=0
+            SKIPPED=0
+          fi
+          
+          RESULTS="{\"passed\": $PASSED, \"failed\": $FAILED, \"skipped\": $SKIPPED}"
+          echo "results_json=$RESULTS" >> $GITHUB_OUTPUT
+
