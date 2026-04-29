@@ -523,12 +523,9 @@ jobs:
       - name: Build
         run: |
           CONTRACT="${{ matrix.contract }}"
-          if [ -n "${{ inputs.build_command }}" ]; then
-            ${{ inputs.build_command }}
-          elif [ -n "$CONTRACT" ]; then
-            pnpm build --mode ${CONTRACT}${{ needs.parse_labels.outputs.mode_suffix }}
-          else
-            pnpm build
+          if [ -n "${{ inputs.build_command }}" ]; then ${{ inputs.build_command }}
+          elif [ -n "$CONTRACT" ]; then pnpm build --mode ${CONTRACT}${{ needs.parse_labels.outputs.mode_suffix }}
+          else pnpm build
           fi
 
       # ── Deploy to S3 ────────────────────────────────────────────────────────
