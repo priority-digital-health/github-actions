@@ -87,13 +87,13 @@ on:
         description: 'S3 bucket used for review deployments'
         required: false
         type: string
-        default: 'pdhdev.co.uk'
+        default: 'platform.review.pdhdev.co.uk'
 
       review_domain:
         description: 'Domain used to construct review URLs in Jira notifications'
         required: false
         type: string
-        default: 'pdhdev.co.uk'
+        default: 'platform.review.pdhdev.co.uk'
 
     secrets:
       # AWS credentials for S3 deletion — required when not using secrets: inherit.

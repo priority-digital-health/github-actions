@@ -75,7 +75,7 @@ on:
         description: 'Domain used for public review URL (standardized default)'
         required: false
         type: string
-        default: 'pdhdev.co.uk'
+        default: 'platform.review.pdhdev.co.uk'
 
       mode_label_prefix:
         description: 'Label prefix for optional build mode label'

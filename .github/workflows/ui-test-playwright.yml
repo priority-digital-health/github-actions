@@ -58,7 +58,7 @@ on:
         description: 'Suffix to append to branch name (matrix mode)'
       review_domain:
         type: string
-        default: 'pdhdev.co.uk'
+        default: 'platform.review.pdhdev.co.uk'
         description: 'Domain used to build matrix-mode REVIEW_URL'
       review_url:
         type: string

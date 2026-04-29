@@ -119,7 +119,7 @@ Common flow: parse labels → for each contract (or once): checkout → install 
 | `environment_middle` | *(empty)* | Fixed segment between contract and mode in the env name, **include leading dash** (e.g. `-lms`) |
 | `environment_suffix` | `preprod` | Trailing env name segment (e.g. `pre-prod` for booking-engine) |
 | `s3_bucket` | `platform.review.pdhdev.co.uk` | S3 bucket for review deployments |
-| `review_domain` | `pdhdev.co.uk` | Domain used to build the public review URL |
+| `review_domain` | `platform.review.pdhdev.co.uk` | Domain used to build the public review URL |
 
 #### Contract / mode parsing
 
@@ -242,7 +242,7 @@ Cleans up review deployments when a PR is closed and posts a Jira comment on mer
 | `environment_middle` | *(empty)* | Must match the value used in the review workflow |
 | `environment_suffix` | `preprod` | Must match the value used in the review workflow |
 | `s3_bucket` | `platform.review.pdhdev.co.uk` | S3 bucket for review deployments |
-| `review_domain` | `pdhdev.co.uk` | Domain used in Jira notifications |
+| `review_domain` | `platform.review.pdhdev.co.uk` | Domain used in Jira notifications |
 | `require_contract_label` | `true` | Set to `false` for no-contract mode (must match review workflow) |
 | `fixed_environment` | *(empty)* | GitHub environment name override (must match review workflow when set) |
 
@@ -303,7 +303,7 @@ Steps performed:
 | `branch_name` | *(empty)* | GitHub head ref for branch name derivation (required if `use_matrix=true`) |
 | `branch_max_length` | `30` | Max branch prefix chars for URL derivation |
 | `branch_suffix` | *(empty)* | Suffix appended to branch-contract string (e.g., `-ml` for mailing-list) |
-| `review_domain` | `pdhdev.co.uk` | Domain used to build matrix-mode review URLs |
+| `review_domain` | `platform.review.pdhdev.co.uk` | Domain used to build matrix-mode review URLs |
 
 ### Caller examples
 
@@ -332,7 +332,7 @@ jobs:
       branch_name: ${{ github.head_ref }}
       branch_max_length: 30
       branch_suffix: ''
-      review_domain: pdhdev.co.uk
+      review_domain: platform.review.pdhdev.co.uk
       playwright_version: 'v1.52.0'
       node_version: '22.20.0'
     secrets: inherit
@@ -350,7 +350,7 @@ jobs:
       branch_name: ${{ github.head_ref }}
       branch_max_length: 20
       branch_suffix: '-ml'
-      review_domain: pdhdev.co.uk
+      review_domain: platform.review.pdhdev.co.uk
       playwright_version: 'v1.52.0'
       node_version: '22.20.0'
     secrets: inherit
@@ -628,7 +628,7 @@ Execution order:
 Use these defaults to keep repos aligned:
 
 - `node_version: '22.20.0'` (shared by deploy + test workflows)
-- `review_domain: pdhdev.co.uk`
+- `review_domain: platform.review.pdhdev.co.uk`
 - `branch_suffix: ''` (no global suffix baseline)
 
 Set `branch_suffix` only when a repo has a hard requirement (for example `mailing-list` using `-ml`).

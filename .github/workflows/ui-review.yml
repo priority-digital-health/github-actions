@@ -167,7 +167,7 @@ on:
         description: 'Domain used to construct the public review URL'
         required: false
         type: string
-        default: 'pdhdev.co.uk'
+        default: 'platform.review.pdhdev.co.uk'
 
       # -- Mode label ----------------------------------------------------------
       mode_label_prefix:
