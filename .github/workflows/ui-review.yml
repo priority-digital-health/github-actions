@@ -521,11 +521,17 @@ jobs:
       #   contract mode   → pnpm build --mode {contract}{mode_suffix}
       #   no-contract mode → pnpm build
       - name: Build
+        env:
+          BUILD_CMD: ${{ inputs.build_command }}
+          CONTRACT: ${{ matrix.contract }}
+          MODE_SUFFIX: ${{ needs.parse_labels.outputs.mode_suffix }}
         run: |
-          CONTRACT="${{ matrix.contract }}"
-          if [ -n "${{ inputs.build_command }}" ]; then ${{ inputs.build_command }}
-          elif [ -n "$CONTRACT" ]; then pnpm build --mode ${CONTRACT}${{ needs.parse_labels.outputs.mode_suffix }}
-          else pnpm build
+          if [ -n "$BUILD_CMD" ]; then
+            $BUILD_CMD
+          elif [ -n "$CONTRACT" ]; then
+            pnpm build --mode ${CONTRACT}${MODE_SUFFIX}
+          else
+            pnpm build
           fi
 
       # ── Deploy to S3 ────────────────────────────────────────────────────────
