@@ -70,7 +70,7 @@ on:
         description: 'S3 bucket used for deployment'
         required: false
         type: string
-        default: 'pdhdev.co.uk'
+        default: 'platform.review.pdhdev.co.uk'
       review_domain:
         description: 'Domain used for public review URL (standardized default)'
         required: false

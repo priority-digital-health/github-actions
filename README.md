@@ -118,7 +118,7 @@ Common flow: parse labels → for each contract (or once): checkout → install 
 | `branch_suffix` | *(empty)* | Static suffix appended after the contract slug (e.g. `-ml` for mailing-list) |
 | `environment_middle` | *(empty)* | Fixed segment between contract and mode in the env name, **include leading dash** (e.g. `-lms`) |
 | `environment_suffix` | `preprod` | Trailing env name segment (e.g. `pre-prod` for booking-engine) |
-| `s3_bucket` | `pdhdev.co.uk` | S3 bucket for review deployments |
+| `s3_bucket` | `platform.review.pdhdev.co.uk` | S3 bucket for review deployments |
 | `review_domain` | `pdhdev.co.uk` | Domain used to build the public review URL |
 
 #### Contract / mode parsing
@@ -241,7 +241,7 @@ Cleans up review deployments when a PR is closed and posts a Jira comment on mer
 | `branch_suffix` | *(empty)* | Must match the value used in the review workflow |
 | `environment_middle` | *(empty)* | Must match the value used in the review workflow |
 | `environment_suffix` | `preprod` | Must match the value used in the review workflow |
-| `s3_bucket` | `pdhdev.co.uk` | S3 bucket for review deployments |
+| `s3_bucket` | `platform.review.pdhdev.co.uk` | S3 bucket for review deployments |
 | `review_domain` | `pdhdev.co.uk` | Domain used in Jira notifications |
 | `require_contract_label` | `true` | Set to `false` for no-contract mode (must match review workflow) |
 | `fixed_environment` | *(empty)* | GitHub environment name override (must match review workflow when set) |
