@@ -431,16 +431,16 @@ jobs:
           node-version: ${{ inputs.node_version }}
           registry-url: https://npm.pkg.github.com/
           scope: '@priority-digital-health'
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
 
       - name: Cache node_modules
         id: node-modules-cache
         uses: actions/cache@v4
         with:
           path: node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('pnpm-lock.yaml') }}
+          key: ${{ runner.os }}-node-${{ inputs.node_version }}-pnpm-${{ inputs.pnpm_version }}-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: |
+            ${{ runner.os }}-node-${{ inputs.node_version }}-pnpm-${{ inputs.pnpm_version }}-
+            ${{ runner.os }}-node-${{ inputs.node_version }}-
             ${{ runner.os }}-node-
 
       - name: Install dependencies

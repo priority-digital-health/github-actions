@@ -79,9 +79,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22.20.0'
-          cache: 'pnpm'
+
+      - name: Cache node_modules
+        id: node-modules-cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-22.20.0-pnpm-8-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-node-22.20.0-pnpm-8-
+            ${{ runner.os }}-node-22.20.0-
+            ${{ runner.os }}-node-
 
       - name: Install dependencies
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Run lint checks

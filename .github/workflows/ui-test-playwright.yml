@@ -133,7 +133,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '${{ inputs.node_version }}'
-          cache: 'pnpm'
           registry-url: 'https://npm.pkg.github.com'
           scope: '@priority-digital-health'
 
@@ -149,8 +148,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('**/pnpm-lock.yaml') }}
+          key: ${{ runner.os }}-node-${{ inputs.node_version }}-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: |
+            ${{ runner.os }}-node-${{ inputs.node_version }}-
             ${{ runner.os }}-node-
 
       - name: Install dependencies
