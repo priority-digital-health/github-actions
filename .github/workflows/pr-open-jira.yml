@@ -15,6 +15,8 @@ name: PR Ready - Jira
 # on:
 #   pull_request:
 #     types: [labeled]
+# permissions:
+#   pull-requests: write   # needed to comment on the PR; the caller must grant it
 # jobs:
 #   jira:
 #     uses: priority-digital-health/github-actions/.github/workflows/pr-open-jira.yml@main
