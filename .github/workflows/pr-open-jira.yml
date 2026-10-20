@@ -90,6 +90,12 @@ jobs:
           fi
           echo "::warning::No Jira key found in PR title or branch"
 
+      - name: Warn when Jira secrets are missing
+        if: steps.key.outputs.TICKET != '' && env.JIRA_BASE_URL == ''
+        run: echo "::warning::JIRA_BASE_URL / JIRA_USER_EMAIL / JIRA_API_TOKEN not available to this repo, so $TICKET was not updated"
+        env:
+          TICKET: ${{ steps.key.outputs.TICKET }}
+
       - name: Update Jira
         if: steps.key.outputs.TICKET != '' && env.JIRA_BASE_URL != ''
         env:
