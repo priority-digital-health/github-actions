@@ -92,6 +92,7 @@ This repo hosts reusable workflows called from service repos via:
 - `ui-build-test.yml` (single orchestration entrypoint for validate + deploy + tests + reporting + health checks)
 - `ui-jira-notify.yml` (single Jira notification entrypoint wrapping ui-update-jira)
 - `ui-update-jira.yml` (shared Jira update workflow for all UI repos — called after deploy + tests)
+- `pr-open-jira.yml` (when a PR gets the `ready` label: requires a PLT key, moves In Development → PR Ready, labels the ticket with the repo name, comments the PR link; see the caller example in the file header)
 
 ---
 

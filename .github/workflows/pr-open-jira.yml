@@ -1,0 +1,131 @@
+name: PR Ready - Jira
+
+# Reusable workflow run when the `ready` label is added to a PR (the "I'm finished" signal,
+# so PRs raised early do not move the ticket).
+#   1. Require a PLT-#### key in the PR title or branch name (comments on the PR if missing)
+#   2. Move the Jira ticket In Development -> PR Ready (skipped for draft PRs)
+#   3. Add a repo-name label to the ticket
+#   4. Comment the PR link on the ticket (once)
+#
+# Never fails the PR: a missing key or a Jira error is a warning only.
+# Title and branch are passed via env, never interpolated into scripts.
+#
+# CALLER EXAMPLE
+# --------------
+# on:
+#   pull_request:
+#     types: [labeled]
+# jobs:
+#   jira:
+#     uses: priority-digital-health/github-actions/.github/workflows/pr-open-jira.yml@main
+#     secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      ready_label:
+        description: 'PR label that signals the PR is finished'
+        required: false
+        type: string
+        default: 'ready'
+      ticket_pattern:
+        description: 'Regex for the Jira key'
+        required: false
+        type: string
+        default: 'PLT-[0-9]+'
+      from_status:
+        description: 'Only transition when the ticket is in this status'
+        required: false
+        type: string
+        default: 'In Development'
+      to_status:
+        description: 'Target status name'
+        required: false
+        type: string
+        default: 'PR Ready'
+    secrets:
+      JIRA_BASE_URL:
+        required: false
+      JIRA_USER_EMAIL:
+        required: false
+      JIRA_API_TOKEN:
+        required: false
+
+permissions:
+  pull-requests: write
+
+jobs:
+  pr_open_jira:
+    if: github.event.label.name == inputs.ready_label
+    runs-on: ubuntu-latest
+    env:
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BRANCH: ${{ github.head_ref }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_DRAFT: ${{ github.event.pull_request.draft }}
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      PATTERN: ${{ inputs.ticket_pattern }}
+      FROM_STATUS: ${{ inputs.from_status }}
+      TO_STATUS: ${{ inputs.to_status }}
+      READY_LABEL: ${{ inputs.ready_label }}
+      JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+      JIRA_AUTH: ${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}
+    steps:
+      - name: Find ticket key
+        id: key
+        run: |
+          TICKET=$(printf '%s\n%s' "$PR_TITLE" "$PR_BRANCH" | grep -oE "$PATTERN" | head -1 || true)
+          echo "TICKET=$TICKET" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on PR when key is missing
+        if: steps.key.outputs.TICKET == ''
+        run: |
+          MARKER='<!-- pr-open-jira -->'
+          if ! gh pr view "$PR_NUMBER" -R "$REPO" --json comments -q '.comments[].body' | grep -qF "$MARKER"; then
+            gh pr comment "$PR_NUMBER" -R "$REPO" --body "$MARKER No Jira key matching \`$PATTERN\` in the PR title or branch name, so the ticket was not updated. Add the key to the title (e.g. \`PLT-1234 - ...\`)."
+          fi
+          echo "::warning::No Jira key found in PR title or branch"
+
+      - name: Update Jira
+        if: steps.key.outputs.TICKET != '' && env.JIRA_BASE_URL != ''
+        env:
+          TICKET: ${{ steps.key.outputs.TICKET }}
+        run: |
+          API="$JIRA_BASE_URL/rest/api/3/issue/$TICKET"
+          jira() { curl -sS -u "$JIRA_AUTH" -H 'Content-Type: application/json' "$@"; }
+
+          # transition (non-draft only, and only from the expected status)
+          STATUS=$(jira "$API?fields=status" | jq -r '.fields.status.name // empty')
+          if [ "$PR_DRAFT" = "true" ]; then
+            echo "Draft PR: not transitioning."
+          elif [ "$STATUS" != "$FROM_STATUS" ]; then
+            echo "::notice::$TICKET is '$STATUS', not '$FROM_STATUS': not transitioning."
+          else
+            TID=$(jira "$API/transitions" | jq -r --arg to "$TO_STATUS" '.transitions[] | select(.to.name == $to) | .id' | head -1)
+            if [ -z "$TID" ]; then
+              echo "::warning::No transition to '$TO_STATUS' available for $TICKET"
+            else
+              CODE=$(jira -o /tmp/transition.json -w '%{http_code}' -X POST "$API/transitions" -d "{\"transition\":{\"id\":\"$TID\"}}")
+              if [ "$CODE" -lt 300 ]; then
+                echo "$TICKET -> $TO_STATUS"
+              else
+                # Jira workflow validators (required fields, time logged, etc.) land here
+                REASON=$(jq -r '[.errorMessages[]?, (.errors // {} | to_entries[] | "\(.key): \(.value)")] | join("; ")' /tmp/transition.json)
+                echo "::warning::Transition failed (HTTP $CODE): $REASON"
+                gh pr comment "$PR_NUMBER" -R "$REPO" --body "Could not move $TICKET to $TO_STATUS: ${REASON:-HTTP $CODE}. Fix it in Jira, then remove and re-add the \`$READY_LABEL\` label."
+              fi
+            fi
+          fi
+
+          # label with the repo name
+          LABEL="${REPO#*/}"
+          CODE=$(jira -o /dev/null -w '%{http_code}' -X PUT "$API" -d "$(jq -n --arg l "$LABEL" '{update:{labels:[{add:$l}]}}')")
+          [ "$CODE" -lt 300 ] || echo "::warning::Label update failed (HTTP $CODE)"
+
+          # PR link comment, once per PR URL
+          if ! jira "$API/comment" | grep -qF "$PR_URL"; then
+            jira -o /dev/null -X POST "$API/comment" -d "$(jq -n --arg u "$PR_URL" \
+              '{body:{version:1,type:"doc",content:[{type:"paragraph",content:[{type:"text",text:"PR ready for review: "},{type:"text",text:$u,marks:[{type:"link",attrs:{href:$u}}]}]}]}}')"
+          fi
