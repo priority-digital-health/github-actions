@@ -53,6 +53,12 @@ jobs:
   triage:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # A reusable workflow cannot get more than its caller grants, so callers must grant the same scopes.
+    permissions:
+      contents: write
+      packages: read
+      pull-requests: write
+      id-token: write
     steps:
       - name: Fetch Dependabot metadata
         id: meta
@@ -70,6 +76,9 @@ jobs:
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        with:
+          # Default is the detached refs/pull/N/merge commit, where `git push origin HEAD` fails.
+          ref: ${{ github.event.pull_request.head.ref }}
 
       - name: Install pnpm
         if: steps.meta.outputs.update-type == 'version-update:semver-major' && inputs.package_manager == 'pnpm'
@@ -89,6 +98,12 @@ jobs:
         run: ${{ inputs.install_command }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git identity
+        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Claude review of major update
         if: steps.meta.outputs.update-type == 'version-update:semver-major'
