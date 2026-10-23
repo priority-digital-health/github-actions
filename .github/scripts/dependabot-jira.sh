@@ -4,7 +4,7 @@
 # Never fails the PR: a missing secret or a Jira error is a warning only.
 set -uo pipefail
 
-if [ -z "${JIRA_BASE_URL:-}" ]; then
+if [ -z "${JIRA_BASE_URL:-}" ] || [ -z "${JIRA_AUTH:-}" ] || [ "$JIRA_AUTH" = ":" ]; then
   echo "::warning::JIRA_BASE_URL / JIRA_USER_EMAIL / JIRA_API_TOKEN not available to this repo (Dependabot runs need them as Dependabot secrets), so no Jira Chore was created"
   exit 0
 fi
@@ -29,9 +29,11 @@ BODY=$(jq -nc --arg p "$PROJECT_KEY" --arg t "$ISSUE_TYPE" --arg s "Dependabot: 
     description:{version:1,type:"doc",content:[{type:"paragraph",content:[
       {type:"text",text:"Dependabot PR: "},{type:"text",text:$u,marks:[{type:"link",attrs:{href:$u}}]}]}]}}}')
 
-KEY=$(jira -X POST "$JIRA_BASE_URL/rest/api/3/issue" -d "$BODY" | jq -r '.key // empty')
+RESP=$(jira -X POST "$JIRA_BASE_URL/rest/api/3/issue" -d "$BODY")
+KEY=$(printf '%s' "$RESP" | jq -r '.key // empty' 2>/dev/null || true)
 if [ -z "$KEY" ]; then
-  echo "::warning::Could not create the Jira $ISSUE_TYPE for $PR_URL"
+  ERR=$(printf '%s' "$RESP" | jq -r '[.errorMessages[]?, (.errors // {} | to_entries[] | "\(.key): \(.value)")] | join("; ")' 2>/dev/null || true)
+  echo "::warning::Could not create the Jira $ISSUE_TYPE for $PR_URL: ${ERR:-$RESP}"
   exit 0
 fi
 echo "Created $KEY for $PR_URL"

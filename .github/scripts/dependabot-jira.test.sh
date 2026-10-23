@@ -11,7 +11,7 @@ cat > "$TMP/bin/curl" <<'STUB'
 echo "curl $*" >> "$CALLS"
 case "$*" in
   *search/jql*) printf '%s' "${FAKE_SEARCH:-{\"issues\":[]\}}" ;;
-  *"-X POST"*"/rest/api/3/issue"*) echo '{"key":"PLT-9999"}' ;;
+  *"-X POST"*"/rest/api/3/issue"*) printf '%s' "${FAKE_CREATE:-{\"key\":\"PLT-9999\"\}}" ;;
 esac
 STUB
 cat > "$TMP/bin/gh" <<'STUB'
@@ -43,4 +43,13 @@ run env JIRA_BASE_URL=https://j.example FAKE_SEARCH='{"issues":[{"key":"PLT-1"}]
 run env JIRA_BASE_URL= >/dev/null
 [ ! -s "$TMP/calls" ] || { echo "FAIL c: made calls without Jira secrets"; cat "$TMP/calls"; exit 1; }
 
-echo "PASS 3/3"
+# (d) base URL set but email/token empty (JIRA_AUTH is ":") -> no curl at all, exit 0
+run env JIRA_BASE_URL=https://j.example JIRA_AUTH=: >/dev/null
+[ ! -s "$TMP/calls" ] || { echo "FAIL d: called Jira with empty credentials"; cat "$TMP/calls"; exit 1; }
+
+# (e) create fails -> warning carries Jira's reason, exit 0
+OUT=$(run env JIRA_BASE_URL=https://j.example FAKE_SEARCH='{"issues":[]}' \
+  FAKE_CREATE='{"errorMessages":[],"errors":{"issuetype":"issue type is not valid"}}')
+echo "$OUT" | grep -q 'issue type is not valid' || { echo "FAIL e: Jira error reason not surfaced: $OUT"; exit 1; }
+
+echo "PASS 5/5"
