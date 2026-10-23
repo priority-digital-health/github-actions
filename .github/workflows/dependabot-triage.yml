@@ -53,6 +53,9 @@ jobs:
   triage:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Secrets cannot be tested in `if:`, so expose whether the key exists. Without it, majors get a human-review comment.
+      HAS_ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
     # A reusable workflow cannot get more than its caller grants, so callers must grant the same scopes.
     permissions:
       contents: write
@@ -75,17 +78,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        if: steps.meta.outputs.update-type == 'version-update:semver-major' && env.HAS_ANTHROPIC_KEY == 'true'
         with:
           # Default is the detached refs/pull/N/merge commit, where `git push origin HEAD` fails.
           ref: ${{ github.event.pull_request.head.ref }}
 
       - name: Install pnpm
-        if: steps.meta.outputs.update-type == 'version-update:semver-major' && inputs.package_manager == 'pnpm'
+        if: steps.meta.outputs.update-type == 'version-update:semver-major' && env.HAS_ANTHROPIC_KEY == 'true' && inputs.package_manager == 'pnpm'
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - name: Setup Node 22.20.0
-        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        if: steps.meta.outputs.update-type == 'version-update:semver-major' && env.HAS_ANTHROPIC_KEY == 'true'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22.20.0
@@ -94,19 +97,30 @@ jobs:
           cache: ${{ inputs.package_manager }}
 
       - name: Install dependencies
-        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        if: steps.meta.outputs.update-type == 'version-update:semver-major' && env.HAS_ANTHROPIC_KEY == 'true'
         run: ${{ inputs.install_command }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Configure Git identity
-        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        if: steps.meta.outputs.update-type == 'version-update:semver-major' && env.HAS_ANTHROPIC_KEY == 'true'
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Ask for human review of major update
+        if: steps.meta.outputs.update-type == 'version-update:semver-major' && env.HAS_ANTHROPIC_KEY != 'true'
+        run: |
+          gh pr comment "$PR_URL" --body "❌ Needs a human: major update ($DEPS, $FROM → $TO). Automated Claude review is not enabled for this repo."
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEPS: ${{ steps.meta.outputs.dependency-names }}
+          FROM: ${{ steps.meta.outputs.previous-version }}
+          TO: ${{ steps.meta.outputs.new-version }}
+
       - name: Claude review of major update
-        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        if: steps.meta.outputs.update-type == 'version-update:semver-major' && env.HAS_ANTHROPIC_KEY == 'true'
         uses: anthropics/claude-code-action@6b6870e649b5ff408753befeaee5fc7989d4e6a9 # v1
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
