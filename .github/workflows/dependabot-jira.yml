@@ -1,0 +1,64 @@
+name: Dependabot Jira Chore
+
+# Reusable workflow: creates one Jira Chore for a Dependabot PR (once per PR) and comments its key on the PR.
+# Logic and tests live in .github/scripts/dependabot-jira.sh and dependabot-jira.test.sh.
+# Dependabot runs only see Dependabot secrets, so JIRA_* must be set as Dependabot secrets in each repo.
+#
+# CALLER EXAMPLE
+# --------------
+# on:
+#   pull_request:
+#     types: [opened]
+# jobs:
+#   jira:
+#     if: github.actor == 'dependabot[bot]'
+#     permissions:
+#       pull-requests: write
+#     uses: priority-digital-health/github-actions/.github/workflows/dependabot-jira.yml@main
+#     secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      project_key:
+        required: false
+        type: string
+        default: 'PLT'
+      issue_type:
+        required: false
+        type: string
+        default: 'Chore'
+    secrets:
+      JIRA_BASE_URL:
+        required: false
+      JIRA_USER_EMAIL:
+        required: false
+      JIRA_API_TOKEN:
+        required: false
+
+permissions:
+  pull-requests: write
+
+jobs:
+  jira:
+    runs-on: ubuntu-latest
+    steps:
+      # Check out the script from this repo, not the caller's: the caller PR is untrusted dependency-update code.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: priority-digital-health/github-actions
+          ref: main
+          path: ga
+
+      - name: Create Jira Chore
+        run: bash ga/.github/scripts/dependabot-jira.sh
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          PROJECT_KEY: ${{ inputs.project_key }}
+          ISSUE_TYPE: ${{ inputs.issue_type }}
+          GH_TOKEN: ${{ github.token }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_AUTH: ${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}
